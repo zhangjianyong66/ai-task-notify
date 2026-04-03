@@ -22,6 +22,7 @@ import base64
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -286,19 +287,8 @@ def format_message(source: str, event_type: str, data: dict) -> tuple:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     if source == "claude-code":
-        transcript = data.get("transcript", [])
-        last_message = ""
-        if transcript:
-            for item in reversed(transcript):
-                if item.get("type") == "assistant":
-                    msg = item.get("message", {})
-                    if isinstance(msg, dict):
-                        content_list = msg.get("content", [])
-                        for c in content_list:
-                            if isinstance(c, dict) and c.get("type") == "text":
-                                last_message = c.get("text", "")[:500]
-                                break
-                    break
+        # Claude Code 直接传入 last_assistant_message 字段
+        last_message = data.get("last_assistant_message", "")[:500]
 
         title = "🤖 Claude Code 任务完成"
         content = f"""**时间**: {now}
@@ -307,6 +297,44 @@ def format_message(source: str, event_type: str, data: dict) -> tuple:
 
 **最后消息**:
 {last_message or '(无内容)'}"""
+
+    elif source == "kimi":
+        hook_event = data.get("hook_event_name", event_type)
+
+        if hook_event == "Stop":
+            title = "🤖 Kimi 任务完成"
+            content = f"""**时间**: {now}
+**工作目录**: {data.get('cwd', 'N/A')}
+**会话ID**: {data.get('session_id', 'N/A')[:8]}...
+**事件**: Agent 轮次结束"""
+        elif hook_event == "Notification":
+            notif_type = data.get("notification_type", "")
+            notif_title = data.get("title", "")
+            notif_body = data.get("body", "")[:800]
+            severity = data.get("severity", "info")
+
+            if notif_type == "permission_prompt":
+                title = "🔔 Kimi 需要执行审批"
+            else:
+                title = f"🔔 Kimi 通知: {notif_title or notif_type}"
+
+            content = f"""**时间**: {now}
+**通知类型**: {notif_type}
+**严重程度**: {severity}
+**工作目录**: {data.get('cwd', 'N/A')}
+
+**内容**:
+{notif_body or '(无内容)'}"""
+        else:
+            title = f"🤖 Kimi 事件: {hook_event}"
+            content = f"""**时间**: {now}
+**工作目录**: {data.get('cwd', 'N/A')}
+**会话ID**: {data.get('session_id', 'N/A')[:8]}...
+
+**原始数据**:
+```json
+{json.dumps(data, ensure_ascii=False, indent=2)[:1000]}
+```"""
 
     elif source == "codex":
         title = "🤖 Codex 任务完成"
@@ -356,14 +384,18 @@ def parse_input() -> tuple:
         except json.JSONDecodeError:
             pass
 
-    # 尝试从 stdin 读取 (Claude Code 方式)
+    # 尝试从 stdin 读取 (Claude Code / Kimi CLI 方式)
     if not data and not sys.stdin.isatty():
         try:
             stdin_data = sys.stdin.read()
             if stdin_data.strip():
                 data = json.loads(stdin_data)
-                source = "claude-code"
-                event_type = "stop"
+                if "hook_event_name" in data:
+                    source = "kimi"
+                    event_type = data.get("hook_event_name", "")
+                else:
+                    source = "claude-code"
+                    event_type = "stop"
         except json.JSONDecodeError:
             pass
 
@@ -382,6 +414,10 @@ def main() -> int:
 
     # 解析输入
     source, event_type, data = parse_input()
+
+    # Kimi Stop hook 防循环：如果 stop_hook_active 为 true，跳过通知
+    if source == "kimi" and event_type == "Stop" and data.get("stop_hook_active"):
+        return 0
 
     if data is None:
         # 事件类型不需要处理
