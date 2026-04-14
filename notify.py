@@ -31,6 +31,9 @@ from datetime import datetime
 from typing import Optional
 
 
+MAX_COMMAND_PREVIEW = 300
+
+
 def load_env(env_path: Optional[str] = None) -> dict:
     """加载 .env 文件"""
     env = {}
@@ -282,6 +285,26 @@ def send_notification(env: dict, title: str, content: str) -> dict:
     return results
 
 
+def format_json_block(data: dict, limit: int = 1000) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2)[:limit]
+
+
+def truncate_text(text: str, limit: int = MAX_COMMAND_PREVIEW) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def format_option_labels(option_labels: list[str], limit: int = 6) -> str:
+    if not option_labels:
+        return "(无)"
+
+    labels = [f"{index}. {truncate_text(label, 80)}" for index, label in enumerate(option_labels[:limit], start=1)]
+    if len(option_labels) > limit:
+        labels.append(f"... 还有 {len(option_labels) - limit} 个选项")
+    return "\n".join(labels)
+
+
 def format_message(source: str, event_type: str, data: dict) -> tuple:
     """格式化通知消息，返回 (title, content)"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -336,14 +359,58 @@ def format_message(source: str, event_type: str, data: dict) -> tuple:
 {json.dumps(data, ensure_ascii=False, indent=2)[:1000]}
 ```"""
 
-    elif source == "codex":
-        title = "🤖 Codex 任务完成"
-        content = f"""**时间**: {now}
+    elif source in {"codex", "codex-wrapper"}:
+        if event_type == "agent-turn-complete":
+            title = "🤖 Codex 任务完成"
+            content = f"""**时间**: {now}
 **事件类型**: {event_type}
 
 **原始数据**:
 ```json
-{json.dumps(data, ensure_ascii=False, indent=2)[:1000]}
+{format_json_block(data)}
+```"""
+        elif event_type == "approval-required":
+            title = "🔐 Codex 需要提权审批"
+            prefix_rule = data.get("prefix_rule") or []
+            prefix_text = ", ".join(prefix_rule) if prefix_rule else "(无)"
+            content = f"""**时间**: {now}
+**工作目录**: {data.get('workdir', 'N/A')}
+**线程**: {data.get('thread_id', 'N/A')}
+**审批原因**: {data.get('justification', '(无)')}
+**命令摘要**: `{truncate_text(data.get('cmd', '(无)'))}`
+**持久规则**: `{truncate_text(prefix_text, 160)}`
+
+**原始数据**:
+```json
+{format_json_block(data)}
+```"""
+        elif event_type == "question-required":
+            title = "❓ Codex 正在等你回答"
+            content = f"""**时间**: {now}
+**线程**: {data.get('thread_id', 'N/A')}
+**问题ID**: {data.get('question_id', 'N/A')}
+**问题标题**: {data.get('question_header', '(无)')}
+**提问工具**: {data.get('tool_name', 'N/A')}
+**问题数量**: {data.get('question_count', 1)}
+
+**问题**:
+{truncate_text(data.get('question_text', '(无)'), 500)}
+
+**选项**:
+{format_option_labels(data.get('option_labels') or [])}
+
+**原始数据**:
+```json
+{format_json_block(data)}
+```"""
+        else:
+            title = f"🤖 Codex 事件: {event_type}"
+            content = f"""**时间**: {now}
+**事件类型**: {event_type}
+
+**原始数据**:
+```json
+{format_json_block(data)}
 ```"""
 
     else:
@@ -353,7 +420,7 @@ def format_message(source: str, event_type: str, data: dict) -> tuple:
 
 **数据**:
 ```json
-{json.dumps(data, ensure_ascii=False, indent=2)[:1000]}
+{format_json_block(data)}
 ```"""
 
     return title, content
@@ -374,11 +441,13 @@ def parse_input() -> tuple:
     if len(sys.argv) > 1:
         try:
             data = json.loads(sys.argv[1])
-            source = "codex"
+            source = data.get("source", "codex")
             event_type = data.get("type", "")
 
-            # Codex 只处理 agent-turn-complete 事件
-            if event_type != "agent-turn-complete":
+            # Codex 只处理已知事件
+            if source == "codex" and event_type != "agent-turn-complete":
+                return source, event_type, None
+            if source == "codex-wrapper" and event_type not in {"approval-required", "question-required"}:
                 return source, event_type, None
 
         except json.JSONDecodeError:
