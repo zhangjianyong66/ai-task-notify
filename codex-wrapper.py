@@ -19,6 +19,7 @@ REAL_CODEX_BIN = "/Users/zhangjianyong/.nvm/versions/node/v22.22.1/bin/codex"
 LOG_PATH = Path("/Users/zhangjianyong/.codex/log/codex-tui.log")
 NOTIFY_SCRIPT = Path("/Users/zhangjianyong/project/ai-task-notify/notify.py")
 POLL_INTERVAL_SECONDS = 0.2
+STARTUP_READ_BYTES = 64 * 1024
 TOOLCALL_PATTERN = re.compile(
     r'thread_id=(?P<thread_id>\S+).+?ToolCall: exec_command (?P<args>\{.*\})'
 )
@@ -30,8 +31,6 @@ QUESTION_PATTERN = re.compile(
 
 def parse_toolcall(line: str):
     if 'ToolCall: exec_command ' not in line:
-        return None
-    if '"sandbox_permissions":"require_escalated"' not in line:
         return None
 
     match = TOOLCALL_PATTERN.search(line)
@@ -133,7 +132,9 @@ def monitor_log(stop_event: threading.Event):
         inode = (stat.st_dev, stat.st_ino)
         if current_inode != inode:
             current_inode = inode
-            position = stat.st_size
+            # On (re)start, replay only the log tail to avoid missing events that
+            # happen immediately after Codex launches while still avoiding full scan.
+            position = max(0, stat.st_size - STARTUP_READ_BYTES)
 
         if stat.st_size < position:
             position = stat.st_size
