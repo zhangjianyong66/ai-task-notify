@@ -15,9 +15,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-REAL_CODEX_BIN = "/Users/zhangjianyong/.nvm/versions/node/v22.22.1/bin/codex"
-LOG_PATH = Path("/Users/zhangjianyong/.codex/log/codex-tui.log")
-NOTIFY_SCRIPT = Path("/Users/zhangjianyong/project/ai-task-notify/notify.py")
+WRAPPER_PATH = Path(__file__).resolve()
+REAL_CODEX_ENV = "CODEX_WRAPPER_REAL_CODEX"
+LOG_PATH_ENV = "CODEX_WRAPPER_LOG_PATH"
+NOTIFY_SCRIPT_ENV = "CODEX_WRAPPER_NOTIFY_SCRIPT"
 POLL_INTERVAL_SECONDS = 0.2
 STARTUP_READ_BYTES = 64 * 1024
 TOOLCALL_PATTERN = re.compile(
@@ -27,6 +28,62 @@ QUESTION_PATTERN = re.compile(
     r"ToolCall: (?P<tool_name>request_user_input|AskUserQuestion) "
     r"(?P<args>\{.*\}) thread_id=(?P<thread_id>\S+)"
 )
+
+
+def get_log_path(env: dict | None = None) -> Path:
+    env = os.environ if env is None else env
+    configured = env.get(LOG_PATH_ENV)
+    if configured:
+        return Path(configured).expanduser()
+
+    home = Path(env.get("HOME", str(Path.home()))).expanduser()
+    return home / ".codex" / "log" / "codex-tui.log"
+
+
+def get_notify_script(env: dict | None = None) -> Path:
+    env = os.environ if env is None else env
+    configured = env.get(NOTIFY_SCRIPT_ENV)
+    if configured:
+        return Path(configured).expanduser()
+
+    return WRAPPER_PATH.with_name("notify.py").resolve()
+
+
+def _is_executable(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def find_real_codex(
+    env: dict | None = None,
+    path_env: str | None = None,
+    wrapper_path: Path | None = None,
+) -> Path | None:
+    env = os.environ if env is None else env
+    configured = env.get(REAL_CODEX_ENV)
+    if configured:
+        return Path(configured).expanduser()
+
+    wrapper_path = WRAPPER_PATH if wrapper_path is None else Path(wrapper_path)
+    wrapper_resolved = wrapper_path.resolve()
+    path_env = env.get("PATH", "") if path_env is None else path_env
+
+    for directory in path_env.split(os.pathsep):
+        if not directory:
+            continue
+
+        candidate = Path(directory).expanduser() / "codex"
+        if not _is_executable(candidate):
+            continue
+
+        try:
+            if candidate.resolve() == wrapper_resolved:
+                continue
+        except OSError:
+            continue
+
+        return candidate.resolve()
+
+    return None
 
 
 def parse_toolcall(line: str):
@@ -94,7 +151,7 @@ def parse_question_toolcall(line: str):
     }
 
 
-def send_notification(event_type: str, event: dict):
+def send_notification(event_type: str, event: dict, notify_script: Path):
     body = {
         "source": "codex-wrapper",
         "type": event_type,
@@ -104,7 +161,7 @@ def send_notification(event_type: str, event: dict):
 
     try:
         subprocess.run(
-            [sys.executable, str(NOTIFY_SCRIPT), json.dumps(body, ensure_ascii=False)],
+            [sys.executable, str(notify_script), json.dumps(body, ensure_ascii=False)],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -113,14 +170,14 @@ def send_notification(event_type: str, event: dict):
         print(f"codex-wrapper: notify failed: {exc}", file=sys.stderr)
 
 
-def monitor_log(stop_event: threading.Event):
+def monitor_log(stop_event: threading.Event, log_path: Path, notify_script: Path):
     seen = set()
     current_inode = None
     position = 0
 
     while not stop_event.is_set():
         try:
-            stat = LOG_PATH.stat()
+            stat = log_path.stat()
         except FileNotFoundError:
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
@@ -144,7 +201,7 @@ def monitor_log(stop_event: threading.Event):
             continue
 
         try:
-            with LOG_PATH.open("r", encoding="utf-8", errors="replace") as handle:
+            with log_path.open("r", encoding="utf-8", errors="replace") as handle:
                 handle.seek(position)
                 chunk = handle.read()
                 position = handle.tell()
@@ -164,7 +221,7 @@ def monitor_log(stop_event: threading.Event):
                 )
                 if dedupe_key not in seen:
                     seen.add(dedupe_key)
-                    send_notification("approval-required", approval_event)
+                    send_notification("approval-required", approval_event, notify_script)
 
             question_event = parse_question_toolcall(line)
             if question_event:
@@ -177,16 +234,31 @@ def monitor_log(stop_event: threading.Event):
                 )
                 if dedupe_key not in seen:
                     seen.add(dedupe_key)
-                    send_notification("question-required", question_event)
+                    send_notification("question-required", question_event, notify_script)
 
 
 def main() -> int:
+    env = os.environ.copy()
+    real_codex_bin = find_real_codex(env)
+    if real_codex_bin is None:
+        print(
+            f"codex-wrapper: real codex not found in PATH; set {REAL_CODEX_ENV}",
+            file=sys.stderr,
+        )
+        return 127
+
+    log_path = get_log_path(env)
+    notify_script = get_notify_script(env)
+
     stop_event = threading.Event()
-    monitor = threading.Thread(target=monitor_log, args=(stop_event,), daemon=True)
+    monitor = threading.Thread(
+        target=monitor_log,
+        args=(stop_event, log_path, notify_script),
+        daemon=True,
+    )
     monitor.start()
 
-    env = os.environ.copy()
-    process = subprocess.Popen([REAL_CODEX_BIN, *sys.argv[1:]], env=env)
+    process = subprocess.Popen([str(real_codex_bin), *sys.argv[1:]], env=env)
     return_code = process.wait()
 
     stop_event.set()
