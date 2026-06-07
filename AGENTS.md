@@ -6,6 +6,7 @@
 
 ## Codex Wrapper 运行约定
 
+- Codex 原生任务完成通知已配置在 `~/.codex/config.toml`：`notify = ["python3", "/home/zhangjianyong/project/ai-task-notify/notify.py"]`。
 - 默认真实 `codex` 从当前 `PATH` 中自动发现，并会跳过 wrapper 自身，避免递归调用。
 - 如需指定真实 `codex`，设置环境变量 `CODEX_WRAPPER_REAL_CODEX`。
 - 默认日志路径是 `~/.codex/log/codex-tui.log`，可用 `CODEX_WRAPPER_LOG_PATH` 覆盖。

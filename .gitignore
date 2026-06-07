@@ -11,3 +11,9 @@ htmlcov/
 # Debug files
 debug-*.py
 debug-*.json
+*.out
+*.tmp
+*.cache
+*.pid
+*.seed
+coverage/
