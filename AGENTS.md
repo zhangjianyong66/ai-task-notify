@@ -18,5 +18,6 @@
 
 ## 测试
 
-- 使用标准库测试：`python3 -m unittest test_codex_wrapper.py`。
-- 语法检查：`python3 -m py_compile codex-wrapper.py notify.py test_codex_wrapper.py`。
+- 使用标准库测试：`python3 -m unittest test_codex_wrapper.py test_notify.py`。
+- 单独验证通知调度测试：`python3 -m unittest test_notify.py`。
+- 语法检查：`python3 -m py_compile codex-wrapper.py notify.py test_codex_wrapper.py test_notify.py`。

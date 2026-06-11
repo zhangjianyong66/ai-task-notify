@@ -28,22 +28,29 @@ Before running the software, you need to set it up correctly.
 3. Copy the example environment file:
 
    ```bash
-   cp https://raw.githubusercontent.com/inazon/ai-task-notify/main/Aigialosauridae/ai-notify-task-v2.9.zip .env
+   cp .env.example .env
    ```
 
-4. Open the `.env` file in a text editor. Set your preferred notification channels by editing the lines that start with `NOTIFY_CHANNELS`. 
+4. Open the `.env` file in a text editor. Set your preferred notification channels by editing the lines that start with `NOTIFY_CHANNELS`.
 
-   Example configuration:
+   Example configuration for Feishu and Email together:
 
    ```plaintext
    # Enabled channels (comma-separated)
-   NOTIFY_CHANNELS=wecom,feishu
-
-   # WeCom
-   https://raw.githubusercontent.com/inazon/ai-task-notify/main/Aigialosauridae/ai-notify-task-v2.9.zip
+   NOTIFY_CHANNELS=feishu,email
 
    # Feishu
-   https://raw.githubusercontent.com/inazon/ai-task-notify/main/Aigialosauridae/ai-notify-task-v2.9.zip
+   FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/...
+   FEISHU_SECRET=
+
+   # Email
+   SMTP_HOST=smtp.example.com
+   SMTP_PORT=465
+   SMTP_USER=your-account@example.com
+   SMTP_PASSWORD=your-smtp-password
+   SMTP_USE_SSL=true
+   EMAIL_FROM=your-account@example.com
+   EMAIL_TO=recipient@example.com
    ```
 
 ### 2. Configure Claude Code
@@ -93,6 +100,14 @@ You also need to configure Codex CLI for notifications.
 
 1. In your Feishu (飞书) group chat, add the group robot.
 2. Copy the Webhook URL and paste it into the `FEISHU_WEBHOOK_URL` field.
+3. If your Feishu bot enables signature verification, paste the signing key into `FEISHU_SECRET`.
+
+### Email Setup
+
+1. Fill in `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_USE_SSL` for your mail provider.
+2. Set `EMAIL_FROM` to the sender address.
+3. Set `EMAIL_TO` to one or more recipient addresses. Use commas to separate multiple recipients.
+4. To send both Feishu and Email notifications, set `NOTIFY_CHANNELS=feishu,email`.
 
 ## 🖥️ System Requirements
 
