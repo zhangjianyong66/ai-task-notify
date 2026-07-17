@@ -42,3 +42,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: 完成 Codex 原生 Hooks 通知接入
+
+**Date**: 2026-07-17
+**Task**: 完成 Codex 原生 Hooks 通知接入
+**Branch**: `main`
+
+### Summary
+
+接入 PermissionRequest 原生 hook，精简 wrapper 为提问与最终失败监听，增加脱敏、异步通知、测试、文档、本机配置和项目规范。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4225293` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
