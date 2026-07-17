@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
 Wrap the real codex binary and emit notifications for key Codex interaction
-events such as escalated approvals and structured user questions.
+events not covered by native hooks, such as structured user questions and
+final upstream response failures.
 """
 
+from collections import OrderedDict
 import json
 import os
 import re
@@ -14,20 +16,30 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 WRAPPER_PATH = Path(__file__).resolve()
+if str(WRAPPER_PATH.parent) not in sys.path:
+    sys.path.insert(0, str(WRAPPER_PATH.parent))
+
+from notify import sanitize_error_summary
+from notify import start_background_notification
+
+
 REAL_CODEX_ENV = "CODEX_WRAPPER_REAL_CODEX"
 LOG_PATH_ENV = "CODEX_WRAPPER_LOG_PATH"
 NOTIFY_SCRIPT_ENV = "CODEX_WRAPPER_NOTIFY_SCRIPT"
 POLL_INTERVAL_SECONDS = 0.2
 STARTUP_READ_BYTES = 64 * 1024
-TOOLCALL_PATTERN = re.compile(
-    r'thread_id=(?P<thread_id>\S+).+?ToolCall: exec_command (?P<args>\{.*\})'
+LOG_MISSING_WARNING_SECONDS = 5.0
+LOG_ERROR_THROTTLE_SECONDS = 30.0
+MAX_DEDUPE_ITEMS = 256
+QUESTION_MARKER_PATTERN = re.compile(
+    r"ToolCall:\s+(?P<tool_name>request_user_input|AskUserQuestion)\s+"
 )
-QUESTION_PATTERN = re.compile(
-    r"ToolCall: (?P<tool_name>request_user_input|AskUserQuestion) "
-    r"(?P<args>\{.*\}) thread_id=(?P<thread_id>\S+)"
+LOG_FIELD_PATTERNS = {}
+HTTP_STATUS_PATTERN = re.compile(
+    r"(?i)(?:http(?:\s+status)?|status(?:\s+code)?)\D{0,12}([1-5]\d{2})"
 )
+COMMON_HTTP_STATUS_PATTERN = re.compile(r"\b(401|403|408|409|429|5\d{2})\b")
 
 
 def get_log_path(env: dict | None = None) -> Path:
@@ -86,42 +98,38 @@ def find_real_codex(
     return None
 
 
-def parse_toolcall(line: str):
-    if 'ToolCall: exec_command ' not in line:
-        return None
-
-    match = TOOLCALL_PATTERN.search(line)
+def extract_log_field(line: str, field: str, default: str = "N/A") -> str:
+    pattern = LOG_FIELD_PATTERNS.get(field)
+    if pattern is None:
+        pattern = re.compile(rf"\b{re.escape(field)}=(?:\"([^\"]*)\"|(\S+))")
+        LOG_FIELD_PATTERNS[field] = pattern
+    match = pattern.search(line)
     if not match:
-        return None
+        return default
+    return (match.group(1) or match.group(2) or default).rstrip(",")
 
+
+def extract_json_object(text: str, start: int) -> dict | None:
+    object_start = text.find("{", start)
+    if object_start < 0:
+        return None
     try:
-        payload = json.loads(match.group("args"))
+        payload, _ = json.JSONDecoder().raw_decode(text[object_start:])
     except json.JSONDecodeError:
         return None
-
-    if payload.get("sandbox_permissions") != "require_escalated":
-        return None
-
-    return {
-        "thread_id": match.group("thread_id"),
-        "cmd": payload.get("cmd", ""),
-        "workdir": payload.get("workdir", ""),
-        "justification": payload.get("justification", ""),
-        "prefix_rule": payload.get("prefix_rule") or [],
-    }
+    return payload if isinstance(payload, dict) else None
 
 
 def parse_question_toolcall(line: str):
     if "ToolCall: request_user_input " not in line and "ToolCall: AskUserQuestion " not in line:
         return None
 
-    match = QUESTION_PATTERN.search(line)
+    match = QUESTION_MARKER_PATTERN.search(line)
     if not match:
         return None
 
-    try:
-        payload = json.loads(match.group("args"))
-    except json.JSONDecodeError:
+    payload = extract_json_object(line, match.end())
+    if payload is None:
         return None
 
     questions = payload.get("questions")
@@ -140,7 +148,13 @@ def parse_question_toolcall(line: str):
     ]
 
     return {
-        "thread_id": match.group("thread_id"),
+        "thread_id": extract_log_field(line, "thread_id"),
+        "turn_id": extract_log_field(
+            line,
+            "turn_id",
+            extract_log_field(line, "sub_id"),
+        ),
+        "cwd": extract_log_field(line, "cwd"),
         "tool_name": match.group("tool_name"),
         "question_count": len(questions),
         "question_header": first_question.get("header", ""),
@@ -151,7 +165,135 @@ def parse_question_toolcall(line: str):
     }
 
 
-def send_notification(event_type: str, event: dict, notify_script: Path):
+def extract_http_status(text: str) -> int | None:
+    match = HTTP_STATUS_PATTERN.search(text) or COMMON_HTTP_STATUS_PATTERN.search(text)
+    return int(match.group(1)) if match else None
+
+
+def classify_upstream_error(text: str) -> str:
+    lowered = text.lower()
+    if any(keyword in lowered for keyword in (
+        "unauthorized",
+        "authentication",
+        "invalid api key",
+        "invalid_api_key",
+        "status 401",
+        "http 401",
+    )):
+        return "authentication"
+    if any(keyword in lowered for keyword in (
+        "rate limit",
+        "rate_limit",
+        "insufficient_quota",
+        "quota exceeded",
+        "status 429",
+        "http 429",
+    )):
+        return "rate-limit"
+    if any(keyword in lowered for keyword in (
+        "response stream connection",
+        "failed to connect response stream",
+        "error connecting to stream",
+    )):
+        return "stream-connect"
+    if any(keyword in lowered for keyword in (
+        "stream disconnected before completion",
+        "stream closed before response.completed",
+        "response stream disconnected",
+    )):
+        return "stream-disconnected"
+    if any(keyword in lowered for keyword in (
+        "retries exhausted",
+        "retry limit",
+        "max retries",
+        "maximum retries",
+    )):
+        return "retry-exhausted"
+    if extract_http_status(text) is not None or any(keyword in lowered for keyword in (
+        "connection refused",
+        "connection reset",
+        "dns error",
+        "timed out",
+        "timeout",
+        "error sending request",
+        "http error",
+    )):
+        return "http-connection"
+    return "upstream-error"
+
+
+def parse_upstream_failure(line: str):
+    marker = "Turn error:"
+    marker_index = line.find(marker)
+    if marker_index < 0:
+        return None
+
+    raw_summary = line[marker_index + len(marker):].strip()
+    summary = sanitize_error_summary(raw_summary)
+    if not summary:
+        return None
+
+    lowered = raw_summary.lower()
+    return {
+        "thread_id": extract_log_field(line, "thread_id"),
+        "turn_id": extract_log_field(
+            line,
+            "turn_id",
+            extract_log_field(line, "sub_id"),
+        ),
+        "cwd": extract_log_field(line, "cwd"),
+        "error_category": classify_upstream_error(raw_summary),
+        "http_status": extract_http_status(raw_summary),
+        "retry_exhausted": any(keyword in lowered for keyword in (
+            "retries exhausted",
+            "retry limit",
+            "max retries",
+            "maximum retries",
+        )),
+        "summary": summary,
+    }
+
+
+class BoundedSeen:
+    def __init__(self, max_items: int = MAX_DEDUPE_ITEMS):
+        self.max_items = max_items
+        self.items = OrderedDict()
+
+    def add(self, key: tuple) -> bool:
+        if key in self.items:
+            self.items.move_to_end(key)
+            return False
+        self.items[key] = None
+        if len(self.items) > self.max_items:
+            self.items.popitem(last=False)
+        return True
+
+
+def emit_once(seen: set, key: str, message: str) -> bool:
+    if key in seen:
+        return False
+    seen.add(key)
+    print(message, file=sys.stderr)
+    return True
+
+
+def emit_throttled(
+    last_emitted: dict,
+    key: str,
+    message: str,
+    interval: float = LOG_ERROR_THROTTLE_SECONDS,
+    now: float | None = None,
+) -> bool:
+    current = time.monotonic() if now is None else now
+    previous = last_emitted.get(key)
+    if previous is not None and current - previous < interval:
+        return False
+    last_emitted[key] = current
+    print(message, file=sys.stderr)
+    return True
+
+
+def send_notification(event_type: str, event: dict, notify_script: Path) -> bool:
     body = {
         "source": "codex-wrapper",
         "type": event_type,
@@ -159,45 +301,55 @@ def send_notification(event_type: str, event: dict, notify_script: Path):
     }
     body.update(event)
 
-    try:
-        subprocess.run(
-            [sys.executable, str(notify_script), json.dumps(body, ensure_ascii=False)],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception as exc:
-        print(f"codex-wrapper: notify failed: {exc}", file=sys.stderr)
+    ok, error = start_background_notification(body, notify_script)
+    if not ok:
+        print(f"codex-wrapper: notify launch failed: {error}", file=sys.stderr)
+    return ok
 
 
 def monitor_log(stop_event: threading.Event, log_path: Path, notify_script: Path):
-    seen = set()
+    seen = BoundedSeen()
+    one_time_diagnostics = set()
+    throttled_diagnostics = {}
     current_inode = None
     position = 0
+    pending = ""
+    started_at = time.monotonic()
 
     while not stop_event.is_set():
         try:
             stat = log_path.stat()
         except FileNotFoundError:
-            time.sleep(POLL_INTERVAL_SECONDS)
+            if time.monotonic() - started_at >= LOG_MISSING_WARNING_SECONDS:
+                emit_once(
+                    one_time_diagnostics,
+                    "missing-log",
+                    f"codex-wrapper: log file not found: {log_path}; configure Codex log_dir explicitly",
+                )
+            stop_event.wait(POLL_INTERVAL_SECONDS)
             continue
         except OSError as exc:
-            print(f"codex-wrapper: log stat failed: {exc}", file=sys.stderr)
-            time.sleep(POLL_INTERVAL_SECONDS)
+            emit_throttled(
+                throttled_diagnostics,
+                "log-stat",
+                f"codex-wrapper: log stat failed: {exc}",
+            )
+            stop_event.wait(POLL_INTERVAL_SECONDS)
             continue
 
         inode = (stat.st_dev, stat.st_ino)
         if current_inode != inode:
+            first_open = current_inode is None
             current_inode = inode
-            # On (re)start, replay only the log tail to avoid missing events that
-            # happen immediately after Codex launches while still avoiding full scan.
-            position = max(0, stat.st_size - STARTUP_READ_BYTES)
+            pending = ""
+            position = max(0, stat.st_size - STARTUP_READ_BYTES) if first_open else 0
 
         if stat.st_size < position:
-            position = stat.st_size
+            position = 0
+            pending = ""
 
         if stat.st_size == position:
-            time.sleep(POLL_INTERVAL_SECONDS)
+            stop_event.wait(POLL_INTERVAL_SECONDS)
             continue
 
         try:
@@ -206,23 +358,21 @@ def monitor_log(stop_event: threading.Event, log_path: Path, notify_script: Path
                 chunk = handle.read()
                 position = handle.tell()
         except OSError as exc:
-            print(f"codex-wrapper: log read failed: {exc}", file=sys.stderr)
-            time.sleep(POLL_INTERVAL_SECONDS)
+            emit_throttled(
+                throttled_diagnostics,
+                "log-read",
+                f"codex-wrapper: log read failed: {exc}",
+            )
+            stop_event.wait(POLL_INTERVAL_SECONDS)
             continue
 
-        for line in chunk.splitlines():
-            approval_event = parse_toolcall(line)
-            if approval_event:
-                dedupe_key = (
-                    "approval-required",
-                    approval_event["thread_id"],
-                    approval_event["cmd"],
-                    approval_event["justification"],
-                )
-                if dedupe_key not in seen:
-                    seen.add(dedupe_key)
-                    send_notification("approval-required", approval_event, notify_script)
+        pending += chunk
+        lines = pending.splitlines(keepends=True)
+        pending = ""
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            pending = lines.pop()
 
+        for line in lines:
             question_event = parse_question_toolcall(line)
             if question_event:
                 dedupe_key = (
@@ -232,9 +382,32 @@ def monitor_log(stop_event: threading.Event, log_path: Path, notify_script: Path
                     question_event["question_text"],
                     tuple(question_event["option_labels"]),
                 )
-                if dedupe_key not in seen:
-                    seen.add(dedupe_key)
+                if seen.add(dedupe_key):
                     send_notification("question-required", question_event, notify_script)
+            elif "ToolCall: request_user_input " in line or "ToolCall: AskUserQuestion " in line:
+                emit_once(
+                    one_time_diagnostics,
+                    "question-parse",
+                    "codex-wrapper: recognized question tool log but could not parse its JSON; Codex log format may have changed",
+                )
+
+            failure_event = parse_upstream_failure(line)
+            if failure_event:
+                dedupe_key = (
+                    "upstream-response-failed",
+                    failure_event["thread_id"],
+                    failure_event["turn_id"],
+                    failure_event["error_category"],
+                    failure_event["summary"],
+                )
+                if seen.add(dedupe_key):
+                    send_notification("upstream-response-failed", failure_event, notify_script)
+            elif "Turn error:" in line:
+                emit_once(
+                    one_time_diagnostics,
+                    "failure-parse",
+                    "codex-wrapper: recognized final turn error log but could not build a safe summary; Codex log format may have changed",
+                )
 
 
 def main() -> int:

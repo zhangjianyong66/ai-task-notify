@@ -12,13 +12,13 @@
 
 ```bash
 # 完整标准库单元测试
-python3 -m unittest test_codex_wrapper.py test_notify.py
+python3 -m unittest test_codex_wrapper.py test_notify.py test_codex_hook.py
 
 # 只验证通知渠道配置和调度
 python3 -m unittest test_notify.py
 
 # 语法检查
-python3 -m py_compile codex-wrapper.py notify.py test_codex_wrapper.py test_notify.py
+python3 -m py_compile codex-wrapper.py codex-hook.py notify.py test_codex_wrapper.py test_codex_hook.py test_notify.py
 
 # 验证 wrapper 能找到并透传真实 Codex
 python3 codex-wrapper.py --version
@@ -39,4 +39,5 @@ python3 codex-wrapper.py --version
 
 - `python3 codex-wrapper.py --version` 会启动真实 Codex 的版本命令，但不应发送通知。
 - 直接运行 `notify.py` 且使用真实 `.env` 可能发送 webhook 或邮件；除非明确进行集成验证，否则不要把它作为常规检查命令。
-- 改动日志解析时，优先为 `parse_toolcall`、`parse_question_toolcall` 增加纯字符串测试，再考虑连接真实日志。
+- 改动日志解析时，优先为 `parse_question_toolcall`、`parse_upstream_failure` 增加纯字符串测试，不读取真实用户日志。
+- 改动审批 hook 时，使用 `test_codex_hook.py` 的注入式启动器验证退出码、stderr 和无 stdout 行为，不制造真实审批或通知。

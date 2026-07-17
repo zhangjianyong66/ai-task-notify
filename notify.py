@@ -16,10 +16,12 @@ AI Task Notify - Claude Code / Codex 任务完成通知脚本
 import json
 import sys
 import os
+import re
 import hmac
 import hashlib
 import base64
 import time
+import subprocess
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -32,6 +34,26 @@ from typing import Optional
 
 
 MAX_COMMAND_PREVIEW = 300
+MAX_ERROR_SUMMARY = 300
+MAX_MESSAGE_PREVIEW = 500
+
+SENSITIVE_QUOTED_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)([\"']?(?:authorization|api[_-]?key|token|secret|password)[\"']?"
+    r"\s*[:=]\s*)([\"']).*?\2"
+)
+SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)([\"']?(?:authorization|api[_-]?key|token|secret|password)[\"']?"
+    r"\s*[:=]\s*)(?:Bearer\s+)?[^\s,;}\"']+"
+)
+BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[^\s,;}]+")
+URL_WITH_QUERY_PATTERN = re.compile(r"(https?://[^\s?#]+)\?[^\s]+", re.IGNORECASE)
+LONG_SECRET_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    r"(?=[A-Za-z0-9_-]{24,}(?![A-Za-z0-9_-]))"
+    r"(?=[A-Za-z0-9_-]*[A-Za-z])"
+    r"(?=[A-Za-z0-9_-]*\d)"
+    r"[A-Za-z0-9_-]+"
+)
 
 
 def load_env(env_path: Optional[str] = None) -> dict:
@@ -290,9 +312,58 @@ def format_json_block(data: dict, limit: int = 1000) -> str:
 
 
 def truncate_text(text: str, limit: int = MAX_COMMAND_PREVIEW) -> str:
+    text = str(text or "")
     if len(text) <= limit:
         return text
     return text[: limit - 3] + "..."
+
+
+def sanitize_error_summary(text: str, limit: int = MAX_ERROR_SUMMARY) -> str:
+    """生成适合通知的脱敏错误摘要。"""
+    summary = " ".join(str(text or "").split())
+    summary = URL_WITH_QUERY_PATTERN.sub(r"\1?[REDACTED]", summary)
+    summary = SENSITIVE_QUOTED_ASSIGNMENT_PATTERN.sub(r"\1[REDACTED]", summary)
+    summary = SENSITIVE_ASSIGNMENT_PATTERN.sub(r"\1[REDACTED]", summary)
+    summary = BEARER_PATTERN.sub("Bearer [REDACTED]", summary)
+    summary = LONG_SECRET_PATTERN.sub("[REDACTED]", summary)
+    return truncate_text(summary, limit)
+
+
+def start_background_notification(
+    data: dict,
+    notify_script: Path | str | None = None,
+) -> tuple[bool, str]:
+    """后台启动通知脚本，返回 (是否启动成功, 错误信息)。"""
+    script = Path(notify_script or __file__).resolve()
+    try:
+        subprocess.Popen(
+            [sys.executable, str(script), json.dumps(data, ensure_ascii=False)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except (OSError, ValueError) as exc:
+        return False, str(exc)
+    return True, ""
+
+
+def format_input_messages(messages) -> str:
+    if not isinstance(messages, list):
+        return truncate_text(str(messages or "(无)"), MAX_MESSAGE_PREVIEW)
+
+    parts = []
+    for item in messages:
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict):
+            text = item.get("text") or item.get("content") or item.get("message") or ""
+        else:
+            text = str(item)
+        if text:
+            parts.append(str(text))
+    return truncate_text("\n".join(parts) or "(无)", MAX_MESSAGE_PREVIEW)
 
 
 def format_option_labels(option_labels: list[str], limit: int = 6) -> str:
@@ -359,35 +430,34 @@ def format_message(source: str, event_type: str, data: dict) -> tuple:
 {json.dumps(data, ensure_ascii=False, indent=2)[:1000]}
 ```"""
 
-    elif source in {"codex", "codex-wrapper"}:
+    elif source in {"codex", "codex-hook", "codex-wrapper"}:
         if event_type == "agent-turn-complete":
             title = "🤖 Codex 任务完成"
             content = f"""**时间**: {now}
-**事件类型**: {event_type}
+**工作目录**: {data.get('cwd', 'N/A')}
+**线程**: {data.get('thread-id', data.get('thread_id', 'N/A'))}
+**轮次**: {data.get('turn-id', data.get('turn_id', 'N/A'))}
 
-**原始数据**:
-```json
-{format_json_block(data)}
-```"""
+**用户输入**:
+{format_input_messages(data.get('input-messages', data.get('input_messages')))}
+
+**最后回复**:
+{truncate_text(data.get('last-assistant-message', data.get('last_assistant_message', '(无)')), 800)}"""
         elif event_type == "approval-required":
             title = "🔐 Codex 需要提权审批"
-            prefix_rule = data.get("prefix_rule") or []
-            prefix_text = ", ".join(prefix_rule) if prefix_rule else "(无)"
             content = f"""**时间**: {now}
-**工作目录**: {data.get('workdir', 'N/A')}
-**线程**: {data.get('thread_id', 'N/A')}
-**审批原因**: {data.get('justification', '(无)')}
-**命令摘要**: `{truncate_text(data.get('cmd', '(无)'))}`
-**持久规则**: `{truncate_text(prefix_text, 160)}`
-
-**原始数据**:
-```json
-{format_json_block(data)}
-```"""
+**工作目录**: {data.get('cwd', data.get('workdir', 'N/A'))}
+**会话**: {data.get('session_id', data.get('thread_id', 'N/A'))}
+**轮次**: {data.get('turn_id', 'N/A')}
+**工具**: {data.get('tool_name', 'N/A')}
+**审批原因**: {truncate_text(data.get('description', data.get('justification', '(无)')), 300)}
+**调用摘要**: `{truncate_text(data.get('command') or data.get('tool_input_summary') or data.get('cmd') or '(无)')}`"""
         elif event_type == "question-required":
             title = "❓ Codex 正在等你回答"
             content = f"""**时间**: {now}
+**工作目录**: {data.get('cwd', 'N/A')}
 **线程**: {data.get('thread_id', 'N/A')}
+**轮次**: {data.get('turn_id', 'N/A')}
 **问题ID**: {data.get('question_id', 'N/A')}
 **问题标题**: {data.get('question_header', '(无)')}
 **提问工具**: {data.get('tool_name', 'N/A')}
@@ -397,12 +467,30 @@ def format_message(source: str, event_type: str, data: dict) -> tuple:
 {truncate_text(data.get('question_text', '(无)'), 500)}
 
 **选项**:
-{format_option_labels(data.get('option_labels') or [])}
+{format_option_labels(data.get('option_labels') or [])}"""
+        elif event_type == "upstream-response-failed":
+            category_labels = {
+                "authentication": "认证失败",
+                "rate-limit": "限流或额度不足",
+                "stream-connect": "响应流连接失败",
+                "stream-disconnected": "响应流中断",
+                "retry-exhausted": "重试耗尽",
+                "http-connection": "HTTP 或连接失败",
+                "upstream-error": "其他上游错误",
+            }
+            category = data.get("error_category", "upstream-error")
+            status = data.get("http_status") or "N/A"
+            title = "🚨 Codex 上游响应失败"
+            content = f"""**时间**: {now}
+**工作目录**: {data.get('cwd', 'N/A')}
+**线程**: {data.get('thread_id', 'N/A')}
+**轮次**: {data.get('turn_id', 'N/A')}
+**错误类别**: {category_labels.get(category, category)}
+**HTTP 状态**: {status}
+**重试耗尽**: {'是' if data.get('retry_exhausted') else '否'}
 
-**原始数据**:
-```json
-{format_json_block(data)}
-```"""
+**错误摘要**:
+{sanitize_error_summary(data.get('summary', '(无)'))}"""
         else:
             title = f"🤖 Codex 事件: {event_type}"
             content = f"""**时间**: {now}
@@ -447,7 +535,12 @@ def parse_input() -> tuple:
             # Codex 只处理已知事件
             if source == "codex" and event_type != "agent-turn-complete":
                 return source, event_type, None
-            if source == "codex-wrapper" and event_type not in {"approval-required", "question-required"}:
+            if source == "codex-hook" and event_type != "approval-required":
+                return source, event_type, None
+            if source == "codex-wrapper" and event_type not in {
+                "question-required",
+                "upstream-response-failed",
+            }:
                 return source, event_type, None
 
         except json.JSONDecodeError:

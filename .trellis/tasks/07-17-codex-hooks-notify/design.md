@@ -45,7 +45,9 @@ Codex TUI info log
 - 新增轻量 `codex-hook.py`，从 stdin 读取 Codex hook JSON。
 - 只处理 `hook_event_name = "PermissionRequest"`，转换为内部 `source = "codex-hook"`、`type = "approval-required"`。
 - 允许的字段包括 `session_id`、`turn_id`、`cwd`、`tool_name`、`tool_input.command` 和 `tool_input.description`。
-- 适配器通过后台子进程调用 `notify.py`，自身不输出内容并以 0 退出，避免改变审批流程。
+- `tool_input.description` 是可选字段；MCP 工具可携带不同形状的 `tool_input`，适配器只提取受控摘要，不序列化完整参数。
+- hook 配置省略 `matcher`，覆盖所有受支持的审批工具；如以后需要收窄范围，再使用工具名正则。
+- 适配器通过后台子进程调用 `notify.py`，自身不输出 stdout、不返回审批决定并以 0 退出，让原有审批提示继续处理。
 - hook 放在用户级 `~/.codex/hooks.json`；项目现有 Trellis hooks 保持不变。
 - 非托管 hook 仍需用户在 `/hooks` 中审核并信任。
 
@@ -81,6 +83,7 @@ Codex TUI info log
 ## 异步发送
 
 - 在 `notify.py` 提供可复用的后台启动辅助函数，供 `codex-hook.py` 和 wrapper 调用。
+- 不使用 hook handler 的 `async` 配置；Codex 当前会跳过这类 handler。
 - 使用参数列表启动 Python，不拼接 shell 命令。
 - stdin/stdout/stderr 指向空设备并创建独立会话，调用方不等待通知完成。
 - 启动失败写入调用方 `stderr`，不改变真实 Codex 的退出码。
@@ -114,3 +117,8 @@ Codex TUI info log
 
 - 不在仓库、测试、文档或告警中写入真实 webhook、SMTP 密码、模型供应商凭据或 MCP 密钥。
 - 当前用户级 Codex 配置中的既有敏感值不在本任务中复制或展示；凭据轮换属于独立安全操作。
+
+## 官方依据
+
+- Codex Hooks 文档：`https://learn.chatgpt.com/docs/hooks`，用于确认 hook 发现位置、信任流程、`PermissionRequest` 输入/输出协议及 `async` 限制。
+- Codex 配置文档：`https://learn.chatgpt.com/docs/config-file/config-advanced`，用于确认 `log_dir` 会启用明文 `codex-tui.log`。

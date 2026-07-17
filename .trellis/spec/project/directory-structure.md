@@ -5,8 +5,10 @@
 ```text
 ai-task-notify/
 ├── notify.py                 # 通知入口、渠道实现、消息格式化与输入解析
+├── codex-hook.py             # Codex PermissionRequest hook 适配器
 ├── codex-wrapper.py          # Codex CLI 包装器和 TUI 日志监听
 ├── test_notify.py            # 通知配置与多渠道调度测试
+├── test_codex_hook.py        # Codex hook 转换与无阻断行为测试
 ├── test_codex_wrapper.py     # wrapper 路径发现和配置测试
 ├── .env.example              # 可提交的通知配置字段模板
 ├── .env                      # 本机私密配置，已由 .gitignore 忽略
@@ -21,8 +23,9 @@ ai-task-notify/
 ## 文件职责
 
 - `notify.py` 是通知业务的唯一运行入口。配置加载、HTTP/SMTP 发送、渠道注册、消息格式化和 CLI/stdin 输入解析都在此文件中。
-- `codex-wrapper.py` 只负责查找并启动真实 Codex、监听 `~/.codex/log/codex-tui.log`、解析审批/提问事件，再调用 `notify.py`。不要把具体渠道发送逻辑复制到 wrapper。
-- 测试与被测脚本同处根目录，命名为 `test_<模块>.py`。`codex-wrapper.py` 文件名包含连字符，因此测试通过 `importlib.util.spec_from_file_location` 加载，见 `test_codex_wrapper.py`。
+- `codex-hook.py` 只负责把 `PermissionRequest` stdin JSON 转换为受控审批事件并后台启动 `notify.py`，不得返回审批决定。
+- `codex-wrapper.py` 只负责查找并启动真实 Codex、监听 `~/.codex/log/codex-tui.log`、解析提问和最终失败事件，再调用 `notify.py`。不要把具体渠道发送逻辑复制到 hook 或 wrapper。
+- 测试与被测脚本同处根目录，命名为 `test_<模块>.py`。两个 Codex 脚本文件名包含连字符，因此测试通过 `importlib.util.spec_from_file_location` 加载。
 - `.env.example` 只列配置键和无敏感值示例；真实 `.env` 不提交。
 - `.trellis/`、`.agents/` 和 `.codex/` 是研发流程与工具配置，不是通知脚本的运行依赖。
 

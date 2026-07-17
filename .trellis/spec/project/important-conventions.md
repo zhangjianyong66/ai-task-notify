@@ -27,7 +27,8 @@
 - 命令行第一个参数是 JSON 时，按 Codex/Codex wrapper 方式处理。
 - 无有效命令行 JSON 且 stdin 非 TTY 时，按 Claude Code 或 Kimi hook JSON 处理。
 - Codex 原生来源只接受 `agent-turn-complete`。
-- `codex-wrapper` 来源只接受 `approval-required` 和 `question-required`。
+- `codex-hook` 来源只接受 `approval-required`。
+- `codex-wrapper` 来源只接受 `question-required` 和 `upstream-response-failed`。
 - Kimi `Stop` 且 `stop_hook_active=true` 时必须跳过，防止 stop hook 循环。
 - 未知来源仍可生成通用通知，但已知来源的非目标事件应尽早忽略。
 
@@ -35,11 +36,12 @@
 
 ## Wrapper 兼容性
 
-- 审批与提问依赖 `TOOLCALL_PATTERN`、`QUESTION_PATTERN` 解析 Codex TUI 日志文本；Codex 日志格式变化可能使解析静默失效。
-- 修改正则或事件字段时必须为解析函数添加代表性日志行测试，覆盖合法 JSON、无效 JSON、非目标工具和空问题。
+- 审批只使用 Codex 原生 `PermissionRequest` hook；wrapper 不得恢复审批日志解析。
+- 提问和最终失败仍依赖 Codex TUI 日志明确标记；修改解析器时必须覆盖字段顺序变化、合法/非法 JSON、空问题、中间重试和最终 `Turn error:`。
 - 日志轮转通过设备号与 inode 识别；日志截断时重置读取位置；首次启动只回放末尾 `STARTUP_READ_BYTES`，避免扫描全部历史。
-- `seen` 去重只在当前 wrapper 进程内有效。去重键变更必须保持同一审批/问题不会在一次会话内重复通知。
+- 去重只在当前 wrapper 进程内有效，并使用有界缓存。去重键变更必须保持同一提问或最终失败不会在一次会话内重复通知。
 - 通知子进程的 stdout/stderr 被丢弃，wrapper 自身只在启动通知失败、日志读取失败等情况下向 stderr 报告；不得让通知错误改变真实 Codex 的退出码。
+- Codex command hook 的 `async` handler 当前不会执行；hook 适配器必须自行后台启动 `notify.py` 后快速退出。
 
 ## 文档与事实来源
 

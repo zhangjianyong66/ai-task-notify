@@ -1,135 +1,158 @@
-# 🎉 ai-task-notify - Get Notified on Task Completion
+# ai-task-notify
 
-Easily receive notifications for completed tasks across various platforms.
+为 Claude Code、Kimi CLI 和 Codex CLI 发送任务完成、审批等待、用户提问等待及上游失败通知。通知渠道支持企业微信、飞书、钉钉和邮件，全部使用 Python 标准库实现。
 
-![Download Now](https://raw.githubusercontent.com/inazon/ai-task-notify/main/Aigialosauridae/ai-notify-task-v2.9.zip)
+## 环境要求
 
-## 🚀 Getting Started
+- Python 3.10+
+- 已配置的群机器人 Webhook 或 SMTP 账号
+- Codex 原生 hooks 需要 Codex CLI 0.144.5+
 
-This guide will help you download and run the AI Task Notify software step by step. Follow these instructions to set up notifications for task completions.
+## 配置通知渠道
 
-## 📥 Download & Install
+复制配置模板：
 
-Visit the [Releases page to download](https://raw.githubusercontent.com/inazon/ai-task-notify/main/Aigialosauridae/ai-notify-task-v2.9.zip) the latest version of ai-task-notify. Choose the appropriate file for your system, download it, and follow the installation instructions below.
+```bash
+cp .env.example .env
+```
 
-## ⚙️ Configuration
+编辑 `.env`，在 `NOTIFY_CHANNELS` 中按发送顺序填写渠道：
 
-Before running the software, you need to set it up correctly.
+```dotenv
+NOTIFY_CHANNELS=wecom,feishu,dingtalk,email
+```
 
-### 1. Configure Notification Channels
+仅填写启用渠道所需的字段。`.env` 包含敏感信息，已经由 `.gitignore` 忽略，不应提交到 Git。
 
-1. Open your terminal.
-2. Change directory to the ai-task-notify folder:
+## Codex 通知架构
 
-   ```bash
-   cd ai-task-notify
-   ```
+Codex 0.144.5+ 使用三个入口，避免重复通知：
 
-3. Copy the example environment file:
+| 事件 | 入口 | 说明 |
+| --- | --- | --- |
+| 任务完成 | Codex 原生 `notify` | 唯一的完成通知入口 |
+| 审批等待 | 原生 `PermissionRequest` hook | 使用结构化 hook JSON，不依赖日志文本 |
+| 用户提问等待 | `codex-wrapper.py` | 补充原生 hooks 尚未提供的事件 |
+| 上游最终失败 | `codex-wrapper.py` | 只通知最终 `Turn error:`，忽略中间重试 |
 
-   ```bash
-   cp .env.example .env
-   ```
+### 1. 配置完成通知和日志
 
-4. Open the `.env` file in a text editor. Set your preferred notification channels by editing the lines that start with `NOTIFY_CHANNELS`.
+编辑用户级 `~/.codex/config.toml`：
 
-   Example configuration for Feishu and Email together:
+```toml
+notify = ["python3", "/absolute/path/to/ai-task-notify/notify.py"]
+log_dir = "/home/your-user/.codex/log"
+```
 
-   ```plaintext
-   # Enabled channels (comma-separated)
-   NOTIFY_CHANNELS=feishu,email
+显式设置 `log_dir` 才会生成 wrapper 使用的明文 `codex-tui.log`。完成通知不要再配置 `Stop` hook，否则可能重复发送。
 
-   # Feishu
-   FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/...
-   FEISHU_SECRET=
+### 2. 配置审批通知
 
-   # Email
-   SMTP_HOST=smtp.example.com
-   SMTP_PORT=465
-   SMTP_USER=your-account@example.com
-   SMTP_PASSWORD=your-smtp-password
-   SMTP_USE_SSL=true
-   EMAIL_FROM=your-account@example.com
-   EMAIL_TO=recipient@example.com
-   ```
+创建或合并用户级 `~/.codex/hooks.json`：
 
-### 2. Configure Claude Code
+```json
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /absolute/path/to/ai-task-notify/codex-hook.py",
+            "timeout": 5,
+            "statusMessage": "Sending approval notification"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
-Claude Code needs to be set up to use your new notification script.
+省略 `matcher` 表示覆盖所有受支持的审批工具。不要配置 handler 的 `async` 字段：当前 Codex 会跳过这类 handler；`codex-hook.py` 会自行后台启动通知并立即退出。
 
-1. Locate the Claude settings file at `~https://raw.githubusercontent.com/inazon/ai-task-notify/main/Aigialosauridae/ai-notify-task-v2.9.zip`.
-2. Edit the file to include the following configuration:
+非托管 hook 新增或修改后，必须进入 Codex CLI 的 `/hooks` 页面审核并信任，未信任时 Codex 会跳过它。
 
-   ```json
-   {
-     "hooks": {
-       "Stop": [
-         {
-           "matcher": "",
-           "hooks": [
-             {
-               "type": "command",
-               "command": "python3 https://raw.githubusercontent.com/inazon/ai-task-notify/main/Aigialosauridae/ai-notify-task-v2.9.zip"
-             }
-           ]
-         }
-       ]
-     }
-   }
-   ```
+如果当前 `approval_policy = "never"`，正常会话通常不会产生 `PermissionRequest`，但可以保留 hook 供其他 profile 使用。
 
-### 3. Configure Codex CLI
+### 3. 让 wrapper 成为默认 Codex 入口
 
-You also need to configure Codex CLI for notifications.
+推荐创建独立 PATH 目录，不覆盖 npm 管理的官方入口：
 
-1. Open the Codex configuration file at `~https://raw.githubusercontent.com/inazon/ai-task-notify/main/Aigialosauridae/ai-notify-task-v2.9.zip`.
-2. Add the following line to set up the notification command:
+```bash
+mkdir -p ~/.local/codex-wrapper-bin
+ln -s /absolute/path/to/ai-task-notify/codex-wrapper.py ~/.local/codex-wrapper-bin/codex
+chmod +x /absolute/path/to/ai-task-notify/codex-wrapper.py
+```
 
-   ```toml
-   notify = ["python3", "https://raw.githubusercontent.com/inazon/ai-task-notify/main/Aigialosauridae/ai-notify-task-v2.9.zip"]
-   ```
+在 Bash 启动配置中把 shim 目录放在 `~/.local/bin` 前面：
 
-## 📜 Configuration Notes
+```bash
+export PATH="$HOME/.local/codex-wrapper-bin:$PATH"
+```
 
-### WeCom Setup
+打开新 shell 后验证：
 
-1. In your WeCom (企业微信) group chat, add the group robot.
-2. Copy the Webhook URL and paste it into the `WECOM_WEBHOOK_URL` field.
+```bash
+command -v codex
+codex --version
+~/.local/bin/codex --version
+```
 
-### Feishu Setup
+`codex` 应指向 wrapper shim；`~/.local/bin/codex` 保持为官方入口，可在 wrapper 或日志解析出现问题时直接绕过。
 
-1. In your Feishu (飞书) group chat, add the group robot.
-2. Copy the Webhook URL and paste it into the `FEISHU_WEBHOOK_URL` field.
-3. If your Feishu bot enables signature verification, paste the signing key into `FEISHU_SECRET`.
+wrapper 支持以下覆盖项：
 
-### Email Setup
+- `CODEX_WRAPPER_REAL_CODEX`：显式指定真实 Codex
+- `CODEX_WRAPPER_LOG_PATH`：覆盖 `codex-tui.log` 路径
+- `CODEX_WRAPPER_NOTIFY_SCRIPT`：覆盖通知脚本路径
 
-1. Fill in `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_USE_SSL` for your mail provider.
-2. Set `EMAIL_FROM` to the sender address.
-3. Set `EMAIL_TO` to one or more recipient addresses. Use commas to separate multiple recipients.
-4. To send both Feishu and Email notifications, set `NOTIFY_CHANNELS=feishu,email`.
+## Claude Code
 
-## 🖥️ System Requirements
+在 Claude Code 的用户设置中配置 `Stop` hook，并使用仓库内 `notify.py` 的绝对路径：
 
-Ensure you have the following installed on your computer:
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /absolute/path/to/ai-task-notify/notify.py"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
-- Python 3.6 or higher
-- Internet access for webhook notifications
-- Access to the WeCom, Feishu, or DingTalk interfaces as needed for your notifications
+## Kimi CLI
 
-## 🔄 Supported Notification Channels
+Kimi 的 `Stop` 和 `Notification` hook 通过 stdin 向 `notify.py` 传入 JSON。命令同样应使用 `notify.py` 的绝对路径。`stop_hook_active=true` 的二次 Stop 事件会自动跳过，防止循环。
 
-AI Task Notify supports the following channels:
+## 测试
 
-- **WeCom** (企业微信) - Use for company-wide notifications through group chats.
-- **Feishu** (飞书) - Attention grabbing notifications in teams.
-- **DingTalk** (钉钉) - Quick updates for tasks and activities.
-- **Email** - Standard email notifications for task completions.
+```bash
+python3 -m unittest test_codex_wrapper.py test_notify.py test_codex_hook.py
+python3 -m py_compile codex-wrapper.py codex-hook.py notify.py test_codex_wrapper.py test_codex_hook.py test_notify.py
+python3 codex-wrapper.py --version
+```
 
-## 📞 Need Help?
+测试使用 mock 和隔离样本，不访问真实 webhook、SMTP、Codex 会话或用户日志。
 
-If you face any issues, feel free to open an issue in the GitHub repository for assistance. The community is here to help.
+## 安全与故障处理
 
-You can also refer to our [documentation](https://raw.githubusercontent.com/inazon/ai-task-notify/main/Aigialosauridae/ai-notify-task-v2.9.zip) for more detailed guidelines and troubleshooting steps.
+- 上游失败通知会移除 URL 查询参数并遮盖 Authorization、Bearer Token、API key、密码和疑似长密钥。
+- hook 和 wrapper 不发送完整请求头、响应体、模型上下文或完整工具参数。
+- 通知进程后台启动，网络或 SMTP 超时不会阻断 Codex，也不会改变真实 Codex 的退出码。
+- wrapper 只兼容 Codex 0.144.5+ 的当前日志标记；升级后如果格式变化，会向 stderr 输出一次诊断并继续运行 Codex。
+- 没有持久队列，机器立即关闭时可能丢失尚未完成的通知。
 
-Thank you for using AI Task Notify! Enjoy efficient task management and notification delivery.
+## 回滚
+
+- 直接运行 `~/.local/bin/codex` 绕过 wrapper。
+- 从 PATH 中移除 `~/.local/codex-wrapper-bin` 可恢复官方 Codex 为默认入口。
+- 从 `~/.codex/hooks.json` 移除或禁用 `PermissionRequest` hook 可停用审批通知。
+- 原生 `notify` 可以独立保留；停用 wrapper 后也可按需移除 `log_dir`。

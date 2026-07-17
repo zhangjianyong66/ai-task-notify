@@ -12,12 +12,15 @@
 - `notify.py` 已支持四种通知渠道、多渠道顺序调度和单渠道失败隔离。
 - Codex 官方 `notify` 当前只发送 `agent-turn-complete`，但载荷已包含 `thread-id`、`turn-id`、`cwd`、`input-messages` 和 `last-assistant-message`，并通过独立子进程启动。
 - 官方 `PermissionRequest` hook 提供结构化审批事件；官方 hooks 没有等待内置 `request_user_input` 回答或上游模型请求失败的专用事件。
+- `PermissionRequest` 提供 `session_id`、`turn_id`、`cwd`、`tool_name` 和 `tool_input`；`tool_input.description` 仅在 Codex 能提供可读审批原因时出现，不能作为必填字段。
 - `Stop` 只在正常停止路径执行，上游请求最终失败不会触发；command hook 本身是同步的。
+- 官方 hook 的 `async` 选项目前虽可解析但不会执行该 handler，因此通知适配器必须自行后台启动 `notify.py` 后快速退出。
 - Codex app-server 有结构化失败事件，但实现完整 app-server 客户端超出本任务范围。
 - Codex 0.144.5 的 `codex_core=info` 日志包含提问工具调用和最终 `Turn error: ...`，但该文本格式不是稳定 hook 协议。
 - 新版 Codex 只有显式配置 `log_dir` 才创建 `codex-tui.log`；本机当前没有该文件，因此现有 wrapper 没有可靠日志输入。
 - 本机 `~/.local/bin/codex` 是 0.144.5，`/usr/local/bin/codex` 是 0.137.0。
 - 当前用户级 `approval_policy = "never"`，默认 profile 通常不会产生审批事件。
+- 当前机器尚未显式配置 `log_dir`，没有 `~/.codex/hooks.json`，也没有 wrapper shim；这些都属于本任务的待部署内容。
 - 现有 8 个单元测试、语法检查和 wrapper 透传验证通过，但关键日志解析缺少直接测试。
 
 ## Requirements
@@ -41,6 +44,7 @@
 ### 执行与兼容
 
 - 审批、提问和最终失败事件由 hook/wrapper 快速转换后，通过后台子进程异步调用 `notify.py`，不等待 webhook 或 SMTP。
+- `PermissionRequest` 通知 hook 不返回审批决定，不输出 stdout，并以 0 退出，让 Codex 原有审批流程继续处理。
 - 不引入常驻服务、持久消息队列、数据库或第三方 Python 依赖；机器立即关闭时允许丢失尚未完成的通知。
 - hook、日志和通知失败不得阻断 Codex、改变审批结果或改变真实 Codex 退出码。
 - 正式兼容基线是 Codex CLI 0.144.5+；旧版仅尽力兼容，不维护旧日志格式分支。
@@ -65,17 +69,18 @@
 
 ## Acceptance Criteria
 
-- [ ] `agent-turn-complete` 只通过 `notify` 发送一次，并展示线程、轮次、目录、用户输入摘要和最后回复。
-- [ ] `PermissionRequest` 使用用户级原生 hook 转换为审批通知，wrapper 不再解析审批日志。
-- [ ] `request_user_input` 和 `AskUserQuestion` 的代表性日志顺序变化仍可解析，非法样本安全跳过并报警。
-- [ ] `Turn error:` 最终失败可分类、提取可用状态并发送一次脱敏告警；中间重试不发送。
-- [ ] Bearer Token、API key、URL 查询参数和疑似长密钥不会出现在格式化告警中。
-- [ ] 异步通知启动失败可诊断，但不会阻断 hook、wrapper 或真实 Codex。
-- [ ] 日志缺失、不可读和已知标记解析失败都有一次性诊断，不会轮询刷屏。
-- [ ] 用户级 `PermissionRequest` hook、显式 `log_dir` 和独立 PATH shim 可验证，官方 `~/.local/bin/codex` 仍可绕过。
-- [ ] 新增解析、格式化、脱敏、hook 和异步启动测试，不访问真实 webhook、SMTP、Codex 会话或用户日志。
-- [ ] 完整单元测试、语法检查、wrapper 版本透传、shim 路径和 `git diff --check` 全部通过。
-- [ ] `README.md`、相关项目规范和 `AGENTS.md` 与最终实现一致，且不包含真实凭据。
+- [x] `agent-turn-complete` 只通过 `notify` 发送一次，并展示线程、轮次、目录、用户输入摘要和最后回复。
+- [x] `PermissionRequest` 使用用户级原生 hook 转换为审批通知，wrapper 不再解析审批日志。
+- [x] 审批通知 hook 对所有受支持工具生效，缺少 `tool_input.description` 时仍能生成安全摘要，且不会自动允许或拒绝审批。
+- [x] `request_user_input` 和 `AskUserQuestion` 的代表性日志顺序变化仍可解析，非法样本安全跳过并报警。
+- [x] `Turn error:` 最终失败可分类、提取可用状态并发送一次脱敏告警；中间重试不发送。
+- [x] Bearer Token、API key、URL 查询参数和疑似长密钥不会出现在格式化告警中。
+- [x] 异步通知启动失败可诊断，但不会阻断 hook、wrapper 或真实 Codex。
+- [x] 日志缺失、不可读和已知标记解析失败都有一次性诊断，不会轮询刷屏。
+- [x] 用户级 `PermissionRequest` hook、显式 `log_dir` 和独立 PATH shim 可验证，官方 `~/.local/bin/codex` 仍可绕过。
+- [x] 新增解析、格式化、脱敏、hook 和异步启动测试，不访问真实 webhook、SMTP、Codex 会话或用户日志。
+- [x] 完整单元测试、语法检查、wrapper 版本透传、shim 路径和 `git diff --check` 全部通过。
+- [x] `README.md`、相关项目规范和 `AGENTS.md` 与最终实现一致，且不包含真实凭据。
 
 ## Out of Scope
 
