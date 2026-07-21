@@ -60,7 +60,7 @@ log_dir = "/home/zhangjianyong/.codex/log"
 /home/zhangjianyong/.local/codex-wrapper-bin/codex
 ```
 
-该符号链接指向项目内 `codex-wrapper.py`，`~/.bashrc` 将 shim 目录放在 PATH 前部。wrapper 会跳过解析后指向自身的候选，继续找到 `~/.local/bin/codex` 0.144.5。紧急绕过直接调用 `~/.local/bin/codex`；不使用 `/usr/local/bin/codex` 0.137.0。
+该符号链接指向项目内 `codex-wrapper.py`，`~/.bashrc` 会去重并强制将 shim 目录放在 PATH 前部，`~/.profile` 仅在 `~/.local/bin` 尚未存在于 PATH 时添加它，避免登录 shell 覆盖 wrapper 顺序。wrapper 会跳过解析后指向自身的候选，继续找到 `~/.local/bin/codex` 0.144.6。紧急绕过直接调用 `~/.local/bin/codex`；不使用 `/usr/local/bin/codex` 0.137.0。
 
 ## Claude Code 与 Kimi
 

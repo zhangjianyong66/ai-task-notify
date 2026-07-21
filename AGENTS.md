@@ -16,9 +16,9 @@
 - 默认日志路径是 `~/.codex/log/codex-tui.log`，可用 `CODEX_WRAPPER_LOG_PATH` 覆盖。
 - 默认通知脚本是项目内的 `notify.py`，可用 `CODEX_WRAPPER_NOTIFY_SCRIPT` 覆盖。
 - 新 Bash shell 中默认 `codex` 路径是 `/home/zhangjianyong/.local/codex-wrapper-bin/codex`，该 shim 是指向项目 `codex-wrapper.py` 的符号链接。
-- 当前官方 Codex 入口是 `/home/zhangjianyong/.local/bin/codex`，版本为 0.144.5，可作为紧急绕过通道；`/usr/local/bin/codex` 0.137.0 不作为真实目标。
+- 当前官方 Codex 入口是 `/home/zhangjianyong/.local/bin/codex`，版本为 0.144.6，可作为紧急绕过通道；`/usr/local/bin/codex` 0.137.0 不作为真实目标。
 - 验证 wrapper 可用：`python3 codex-wrapper.py --version`。
-- wrapper shim 目录通过 `~/.bashrc` 放在 PATH 前部；当前已启动 shell 不会自动刷新，验证时使用新 shell 或重新加载配置。
+- wrapper shim 目录通过 `~/.bashrc` 去重并强制放在 PATH 前部；`~/.profile` 仅在 `~/.local/bin` 尚未存在于 PATH 时添加它，避免登录 shell 覆盖 wrapper 顺序。当前已启动 shell 不会自动刷新，验证时使用新 shell 或重新加载配置。
 - 回滚或故障绕过：直接运行 `/home/zhangjianyong/.local/bin/codex`，或从 PATH 中移除 `~/.local/codex-wrapper-bin`。
 - Codex 0.144.5 的 handler `async` 选项不会执行对应 hook；审批 hook 必须由 `codex-hook.py` 自行后台启动通知后快速退出。
 
