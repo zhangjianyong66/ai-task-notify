@@ -29,6 +29,23 @@ class CodexWrapperConfigTest(unittest.TestCase):
             MODULE_PATH.with_name("notify.py").resolve(),
         )
 
+    def test_log_path_precedence_is_override_then_codex_home_then_home(self):
+        self.assertEqual(
+            codex_wrapper.get_log_path({
+                "HOME": "/home/example",
+                "CODEX_HOME": "/var/lib/codex",
+                "CODEX_WRAPPER_LOG_PATH": "/tmp/custom.log",
+            }),
+            Path("/tmp/custom.log"),
+        )
+        self.assertEqual(
+            codex_wrapper.get_log_path({
+                "HOME": "/home/example",
+                "CODEX_HOME": "/var/lib/codex",
+            }),
+            Path("/var/lib/codex/log/codex-tui.log"),
+        )
+
     def test_find_real_codex_skips_wrapper_candidate(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

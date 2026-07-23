@@ -12,13 +12,14 @@
 
 ```bash
 # 完整标准库单元测试
-python3 -m unittest test_codex_wrapper.py test_notify.py test_codex_hook.py
+python3 -m unittest test_setup_config.py test_codex_wrapper.py test_notify.py test_codex_hook.py
 
 # 只验证通知渠道配置和调度
 python3 -m unittest test_notify.py
 
 # 语法检查
-python3 -m py_compile codex-wrapper.py codex-hook.py notify.py test_codex_wrapper.py test_codex_hook.py test_notify.py
+python3 -m py_compile setup_config.py codex-wrapper.py codex-hook.py notify.py test_setup_config.py test_codex_wrapper.py test_codex_hook.py test_notify.py
+bash -n setup.sh
 
 # 验证 wrapper 能找到并透传真实 Codex
 python3 codex-wrapper.py --version

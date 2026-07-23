@@ -4,6 +4,18 @@
 - `notify.py` 通过 `.env` 读取通知渠道配置，支持企业微信、飞书、钉钉和邮件。
 - `codex-hook.py` 接收 Codex 原生 `PermissionRequest` hook JSON，并在不改变审批结果的前提下后台启动通知。
 - `codex-wrapper.py` 用于包装本机 `codex` CLI：启动真实 `codex`，同时监听 Codex TUI 日志中的用户提问和上游最终失败事件并调用 `notify.py` 发通知。
+- Linux + Bash 的推荐部署入口是 `./setup.sh install`；稳定 shell 入口把配置工作交给纯标准库 `setup_config.py`。
+
+## 一键配置运行约定
+
+- 命令契约：`./setup.sh install [--non-interactive] [--migrate] [--dry-run]`、`./setup.sh check`、`./setup.sh uninstall [--non-interactive] [--dry-run]`。
+- 安装器只配置现有 Codex 0.144.5+，不安装或升级 Codex、Python、Node/npm，不调用 `sudo`。
+- Codex 配置目录优先使用 `CODEX_HOME`，否则为 `~/.codex`；状态位于 `${XDG_STATE_HOME:-$HOME/.local/state}/ai-task-notify/install-state.json`，状态目录权限 `0700`、清单权限 `0600`。
+- `.env` 权限固定为 `0600`；凭据不接受命令行参数，也不会写入状态清单或计划输出。
+- `check`、`--dry-run` 和非交互安装不发送通知。交互安装仅在本地事务提交后由用户明确确认才发送测试通知。
+- 每个用户只允许一个激活仓库副本；非交互迁移需显式 `--migrate`，且不复制旧仓库 `.env`。
+- 安装自动配置完成即算成功；进入 Codex `/hooks` 审核信任是后续人工行为，不归脚本探测或代办。
+- 卸载恢复首次接管前状态，默认保留 `.env` 和备份；安装后被用户修改的受管项保留并返回非零。
 
 ## Codex Wrapper 运行约定
 
@@ -16,7 +28,7 @@
 - 默认日志路径是 `~/.codex/log/codex-tui.log`，可用 `CODEX_WRAPPER_LOG_PATH` 覆盖。
 - 默认通知脚本是项目内的 `notify.py`，可用 `CODEX_WRAPPER_NOTIFY_SCRIPT` 覆盖。
 - 新 Bash shell 中默认 `codex` 路径是 `/home/zhangjianyong/.local/codex-wrapper-bin/codex`，该 shim 是指向项目 `codex-wrapper.py` 的符号链接。
-- 当前官方 Codex 入口是 `/home/zhangjianyong/.local/bin/codex`，版本为 0.144.6，可作为紧急绕过通道；`/usr/local/bin/codex` 0.137.0 不作为真实目标。
+- 当前官方 Codex 入口是 `/home/zhangjianyong/.local/bin/codex`，版本为 0.145.0，可作为紧急绕过通道；`/usr/local/bin/codex` 0.137.0 不作为真实目标。
 - 验证 wrapper 可用：`python3 codex-wrapper.py --version`。
 - wrapper shim 目录通过 `~/.bashrc` 去重并强制放在 PATH 前部；`~/.profile` 仅在 `~/.local/bin` 尚未存在于 PATH 时添加它，避免登录 shell 覆盖 wrapper 顺序。当前已启动 shell 不会自动刷新，验证时使用新 shell 或重新加载配置。
 - 回滚或故障绕过：直接运行 `/home/zhangjianyong/.local/bin/codex`，或从 PATH 中移除 `~/.local/codex-wrapper-bin`。
@@ -24,9 +36,9 @@
 
 ## 测试
 
-- 使用标准库测试：`python3 -m unittest test_codex_wrapper.py test_notify.py test_codex_hook.py`。
+- 使用标准库测试：`python3 -m unittest test_setup_config.py test_codex_wrapper.py test_notify.py test_codex_hook.py`。
 - 单独验证通知调度测试：`python3 -m unittest test_notify.py`。
-- 语法检查：`python3 -m py_compile codex-wrapper.py codex-hook.py notify.py test_codex_wrapper.py test_codex_hook.py test_notify.py`。
+- 语法检查：`python3 -m py_compile setup_config.py codex-wrapper.py codex-hook.py notify.py test_setup_config.py test_codex_wrapper.py test_codex_hook.py test_notify.py`，并执行 `bash -n setup.sh`。
 <!-- TRELLIS:START -->
 # Trellis Instructions
 

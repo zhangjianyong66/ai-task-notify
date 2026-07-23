@@ -8,6 +8,37 @@
 - 已配置的群机器人 Webhook 或 SMTP 账号
 - Codex 原生 hooks 需要 Codex CLI 0.144.5+
 
+## Codex 一键配置
+
+Linux + Bash 用户推荐从仓库根目录运行统一入口：
+
+```bash
+./setup.sh install
+```
+
+向导会配置通知渠道、Codex `notify`、`PermissionRequest` hook、wrapper shim 和 Bash PATH。已有完整 `.env` 默认复用；敏感字段使用隐藏输入，配置文件权限固定为 `0600`。安装器不会安装或升级 Python、Codex、Node/npm，也不会使用 `sudo`。
+
+常用命令：
+
+```bash
+./setup.sh install --dry-run
+./setup.sh install --non-interactive
+./setup.sh install --non-interactive --migrate
+./setup.sh check
+./setup.sh uninstall --dry-run
+./setup.sh uninstall
+```
+
+- `--dry-run` 只显示计划，不写文件、不创建备份、不采集凭据、不发送通知。
+- `--non-interactive` 只使用已有 `.env` 或进程环境变量，缺少字段或存在冲突时在写入前失败。
+- 每个用户只维护一个激活仓库副本；无人值守迁移必须显式加 `--migrate`，且不会复制旧仓库的 `.env`。
+- `check` 始终只读且不发送通知。
+- 卸载默认保留 `.env`、普通备份及用户后来修改的冲突项。
+
+安装状态位于 `${XDG_STATE_HOME:-$HOME/.local/state}/ai-task-notify/install-state.json`。安装完成表示自动配置成功；新增 hook 仍需用户进入 Codex `/hooks` 页面审核并信任，这属于安装后的人工安全步骤，不影响安装成功码。
+
+以下手工配置章节保留用于排障和理解接入结构。
+
 ## 配置通知渠道
 
 复制配置模板：
@@ -135,8 +166,9 @@ Kimi 的 `Stop` 和 `Notification` hook 通过 stdin 向 `notify.py` 传入 JSON
 ## 测试
 
 ```bash
-python3 -m unittest test_codex_wrapper.py test_notify.py test_codex_hook.py
-python3 -m py_compile codex-wrapper.py codex-hook.py notify.py test_codex_wrapper.py test_codex_hook.py test_notify.py
+python3 -m unittest test_setup_config.py test_codex_wrapper.py test_notify.py test_codex_hook.py
+python3 -m py_compile setup_config.py codex-wrapper.py codex-hook.py notify.py test_setup_config.py test_codex_wrapper.py test_codex_hook.py test_notify.py
+bash -n setup.sh
 python3 codex-wrapper.py --version
 ```
 

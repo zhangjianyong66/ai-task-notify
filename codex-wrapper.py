@@ -49,6 +49,9 @@ def get_log_path(env: dict | None = None) -> Path:
         return Path(configured).expanduser()
 
     home = Path(env.get("HOME", str(Path.home()))).expanduser()
+    codex_home = env.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home).expanduser() / "log" / "codex-tui.log"
     return home / ".codex" / "log" / "codex-tui.log"
 
 
