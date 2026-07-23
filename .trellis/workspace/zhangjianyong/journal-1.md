@@ -75,3 +75,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: 完成 Codex 通知一键配置
+
+**Date**: 2026-07-23
+**Task**: 完成 Codex 通知一键配置
+**Branch**: `main`
+
+### Summary
+
+新增 setup.sh 统一入口及纯标准库安装器，支持安装、检查、迁移、dry-run、事务回滚和卸载；补充 CODEX_HOME 支持、39 项测试及部署规范。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6d76353` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
